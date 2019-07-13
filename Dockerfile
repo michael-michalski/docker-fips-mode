@@ -1,16 +1,23 @@
-FROM alpine:3.9
+ARG ALPINE_VERSION
+
+FROM alpine:$ALPINE_VERSION
 
 RUN apk update \
  && apk upgrade \
  && apk add --update curl gcc g++ make autoconf ncurses-dev perl coreutils gnupg linux-headers zlib-dev
 
-ENV ERLANG_VERSION=21.1.3 \
-    ELIXIR_VERSION="v1.7.2" \
-    OPENSSL_FIPS_VER=2.0.16 \
-    OPENSSL_VER=1.0.2o \
-    LANG=en_US.UTF-8
+ENV LANG=en_US.UTF-8 \
+ OPENSSL_FIPS_VER=2.0.16 \
+ OPENSSL_FIPS_SHA256=a3cd13d0521d22dd939063d3b4a0d4ce24494374b91408a05bdaca8b681c63d4 \
+ OPENSSL_VER=1.0.2s \
+ OPENSSL_SHA256=cabd5c9492825ce5bd23f3c3aeed6a97f8142f606d893df216411f07d1abab96
+
+ARG ERLANG_VERSION
+ARG ELIXIR_VERSION
 
 WORKDIR /tmp/openssl-fips-build
+
+RUN echo $OPENSSL_FIPS_VER
 
 RUN curl -fSL -o openssl-fips-$OPENSSL_FIPS_VER.tar.gz https://www.openssl.org/source/openssl-fips-$OPENSSL_FIPS_VER.tar.gz \
     && tar --strip-components=1 -xzf openssl-fips-$OPENSSL_FIPS_VER.tar.gz \
@@ -24,15 +31,15 @@ RUN curl -fSL -o openssl-$OPENSSL_VER.tar.gz https://www.openssl.org/source/open
     && perl ./Configure linux-x86_64 --prefix=/usr \
                                      --libdir=lib \
                                      --openssldir=/etc/ssl \
-                                     fips shared zlib \
+                                     fips shared zlib no-tests \
                                      -DOPENSSL_NO_BUF_FREELISTS \
                                      -Wa,--noexecstack enable-ssl2 \
-    && make \
+    && make -j7 \
     && make install_sw
 
 WORKDIR /tmp/erlang-build
 
-RUN curl -fSL -o OTP-$ERLANG_VERSION.tar.gz https://github.com/erlang/otp/archive/OTP-$ERLANG_VERSION.tar.gz \
+RUN echo $ERLANG_VERSION; echo test; curl -fSL -o OTP-$ERLANG_VERSION.tar.gz https://github.com/erlang/otp/archive/OTP-$ERLANG_VERSION.tar.gz \
      && tar --strip-components=1 -zxf OTP-$ERLANG_VERSION.tar.gz \
      && rm OTP-$ERLANG_VERSION.tar.gz \
      && ./otp_build autoconf && \
@@ -78,7 +85,25 @@ RUN curl -fSL -o OTP-$ERLANG_VERSION.tar.gz https://github.com/erlang/otp/archiv
      && rm elixir-src.tar.gz \
      && make
 
-FROM alpine:3.9
+FROM alpine:$ALPINE_VERSION AS alpine-fips
+
+ENV LANG=en_US.UTF-8
+
+COPY --from=0 /tmp/openssl-fips-build /tmp/openssl-fips-build
+COPY --from=0 /tmp/openssl-build /tmp/openssl-build
+
+RUN apk --no-cache update \
+    && apk --no-cache upgrade \
+    && apk --no-cache add make ncurses-libs perl binutils \
+    && cd /tmp/openssl-fips-build && make install \
+    && cd /tmp/openssl-build && make install_sw
+
+RUN rm -rf /tmp/openssl-fips-build \
+  && rm -rf /tmp/openssl-build
+
+RUN apk --no-cache del perl binutils
+
+FROM alpine:$ALPINE_VERSION AS alpine-elixir-fips
 
 ENV LANG=en_US.UTF-8
 
@@ -89,19 +114,13 @@ COPY --from=0 /tmp/elixir-build /tmp/elixir-build
 
 RUN apk --no-cache update \
     && apk --no-cache upgrade \
-    && apk --no-cache add make ncurses-libs perl binutils
-
-#RUN cd /tmp/openssl-fips-build && make install
-
-RUN cd /tmp/openssl-build && make install_sw
-
-RUN cd /tmp/erlang-build && export ERL_TOP=/tmp/erlang-build && make install
-
-RUN cd /tmp/elixir-build && make install
-
-RUN rm -rf /tmp/erlang-build \
-  && rm -rf /tmp/elixir-build \
-  && rm -rf /tmp/openssl-fips-build \
-  && rm -rf /tmp/openssl-build
-
-RUN apk --no-cache del perl binutils
+    && apk --no-cache add make ncurses-libs perl binutils \
+    && cd /tmp/openssl-fips-build && make install \
+    && cd /tmp/openssl-build && make install_sw \
+    && cd /tmp/erlang-build && export ERL_TOP=/tmp/erlang-build && make install \
+    && cd /tmp/elixir-build && make install \
+    && rm -rf /tmp/erlang-build \
+    && rm -rf /tmp/elixir-build \
+    && rm -rf /tmp/openssl-fips-build \
+    && rm -rf /tmp/openssl-build \
+    && apk --no-cache del perl binutils
