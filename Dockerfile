@@ -4,7 +4,7 @@ FROM alpine:$ALPINE_VERSION
 
 RUN apk update \
  && apk upgrade \
- && apk add --update curl gcc g++ make autoconf ncurses-dev perl coreutils gnupg linux-headers zlib-dev
+ && apk add --update dpkg-dev dpkg curl gcc g++ make autoconf ncurses-dev perl coreutils gnupg linux-headers zlib-dev
 
 ENV LANG=en_US.UTF-8 \
  OPENSSL_FIPS_VER=2.0.16 \
@@ -34,46 +34,60 @@ RUN curl -fSL -o openssl-$OPENSSL_VER.tar.gz https://www.openssl.org/source/open
                                      fips shared zlib no-tests \
                                      -DOPENSSL_NO_BUF_FREELISTS \
                                      -Wa,--noexecstack enable-ssl2 \
-    && make -j7 \
+    && make -j$(getconf _NPROCESSORS_ONLN) \
+    && scanelf --nobanner -E ET_EXEC -BF '%F' --recursive /tmp/openssl-build | xargs -r strip --strip-all \
+    && scanelf --nobanner -E ET_DYN -BF '%F' --recursive /tmp/openssl-build | xargs -r strip --strip-unneeded \
     && make install_sw
 
 WORKDIR /tmp/erlang-build
 
-RUN echo $ERLANG_VERSION; echo test; curl -fSL -o OTP-$ERLANG_VERSION.tar.gz https://github.com/erlang/otp/archive/OTP-$ERLANG_VERSION.tar.gz \
-     && tar --strip-components=1 -zxf OTP-$ERLANG_VERSION.tar.gz \
-     && rm OTP-$ERLANG_VERSION.tar.gz \
-     && ./otp_build autoconf && \
-         export ERL_TOP=/tmp/erlang-build && \
-         export PATH=$ERL_TOP/bin:$PATH && \
-         export CPPFlAGS="-D_BSD_SOURCE $CPPFLAGS" && \
-         ./configure --prefix=/usr \
-         --sysconfdir=/etc \
-         --mandir=/usr/share/man \
-         --infodir=/usr/share/info \
-         --without-javac \
-         --without-wx \
-         --without-debugger \
-         --without-observer \
-         --without-jinterface \
-         --without-cosEvent\
-         --without-cosEventDomain \
-         --without-cosFileTransfer \
-         --without-cosNotification \
-         --without-cosProperty \
-         --without-cosTime \
-         --without-cosTransactions \
-         --without-et \
-         --without-gs \
-         --without-ic \
-         --without-megaco \
-         --without-orber \
-         --without-percept \
-         --without-typer \
-         --enable-threads \
-         --enable-shared-zlib \
-         --enable-ssl=dynamic-ssl-lib \
-         --enable-fips \
-     && make -j7 && make install
+RUN echo $ERLANG_VERSION; curl -fSL -o OTP-$ERLANG_VERSION.tar.gz https://github.com/erlang/otp/archive/OTP-$ERLANG_VERSION.tar.gz \
+    && tar --strip-components=1 -zxf OTP-$ERLANG_VERSION.tar.gz \
+    && rm OTP-$ERLANG_VERSION.tar.gz \
+    && ./otp_build autoconf && \
+        export ERL_TOP=/tmp/erlang-build && \
+        export PATH=$ERL_TOP/bin:$PATH && \
+        export CPPFlAGS="-D_BSD_SOURCE $CPPFLAGS" \
+        && gnuArch="$(dpkg-architecture --query DEB_HOST_GNU_TYPE)" \
+        && ./configure --build="$gnuArch" \
+        --without-javac \
+        --without-wx \
+        --without-debugger \
+        --without-observer \
+        --without-jinterface \
+        --without-cosEvent\
+        --without-cosEventDomain \
+        --without-cosFileTransfer \
+        --without-cosNotification \
+        --without-cosProperty \
+        --without-cosTime \
+        --without-cosTransactions \
+        --without-et \
+        --without-gs \
+        --without-ic \
+        --without-megaco \
+        --without-orber \
+        --without-percept \
+        --without-typer \
+        --enable-threads \
+        --enable-shared-zlib \
+        #--disable-dynamic-ssl-lib \
+        --enable-ssl=dynamic-ssl-lib \
+        #--enable-ssl=/usr/lib \
+        --enable-fips \
+    && make -j$(getconf _NPROCESSORS_ONLN) \
+    && make install \
+    && find /usr/local -regex '/usr/local/lib/erlang/\(lib/\|erts-\).*/\(man\|doc\|obj\|c_src\|emacs\|info\|examples\)' | xargs rm -rf \
+    && find /usr/local -name src | xargs -r find | grep -v '\.hrl$' | xargs rm -v || true \
+    && find /usr/local -name src | xargs -r find | xargs rmdir -vp || true \
+    && scanelf --nobanner -E ET_EXEC -BF '%F' --recursive /usr/local | xargs -r strip --strip-all \
+    && scanelf --nobanner -E ET_DYN -BF '%F' --recursive /usr/local | xargs -r strip --strip-unneeded \
+    && runDeps="$( \
+        scanelf --needed --nobanner --format '%n#p' --recursive /usr/local \
+            | tr ',' '\n' \
+            | sort -u \
+            | awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+    )"
 
  ## Elixir
  WORKDIR /tmp/elixir-build
@@ -96,10 +110,14 @@ RUN apk --no-cache update \
     && apk --no-cache upgrade \
     && apk --no-cache add make ncurses-libs perl binutils \
     && cd /tmp/openssl-fips-build && make install \
-    && cd /tmp/openssl-build && make install_sw
-
-RUN rm -rf /tmp/openssl-fips-build \
-  && rm -rf /tmp/openssl-build
+    && cd /tmp/openssl-build && make install_sw \
+    && rm /usr/lib/libcrypto.a \
+    && rm /usr/lib/libssl.a \
+    && rm /usr/lib/libcrypto.so \
+    && rm /usr/lib/libssl.so \
+    && rm -rf /usr/include/openssl \
+    && rm -rf /tmp/openssl-fips-build \
+    && rm -rf /tmp/openssl-build
 
 RUN apk --no-cache del perl binutils
 
@@ -123,4 +141,9 @@ RUN apk --no-cache update \
     && rm -rf /tmp/elixir-build \
     && rm -rf /tmp/openssl-fips-build \
     && rm -rf /tmp/openssl-build \
+    && rm /usr/lib/libcrypto.a \
+    && rm /usr/lib/libssl.a \
+    && rm /usr/lib/libcrypto.so \
+    && rm /usr/lib/libssl.so \
+    && rm -rf /usr/include/openssl \
     && apk --no-cache del perl binutils
