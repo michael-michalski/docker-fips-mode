@@ -2,7 +2,7 @@ ALPINE_ELIXIR_FIPS ?= michaelmichalski/alpine-elixir-fips
 ALPINE_FIPS ?= michaelmichalski/alpine-fips
 
 ifndef ALPINE_VERSION
-override ALPINE_VERSION=3.10
+override ALPINE_VERSION=3.10.3
 endif
 ifndef ERLANG_VERSION
 override ERLANG_VERSION=22.2
